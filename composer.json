@@ -1,0 +1,39 @@
+{
+    "name": "raylin666/guzzle",
+    "description": "Swoole coroutine handler for guzzle",
+    "keywords": [
+        "php",
+        "swoole",
+        "guzzle",
+        "handler",
+        "raylin666"
+    ],
+    "type": "library",
+    "license": "MIT",
+    "homepage": "https://github.com/raylin666/guzzle",
+    "authors": [
+        {
+            "name": "raylin666",
+            "email": "1099013371@qq.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.0",
+        "psr/http-message": "^1.0",
+        "guzzlehttp/guzzle": "^6.3",
+        "raylin666/utils": "^1.0",
+        "raylin666/pool": "^1.0"
+    },
+    "require-dev": {},
+    "autoload": {
+        "psr-4": {
+            "Raylin666\\Guzzle\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {}
+    },
+    "extra": {},
+    "packages": {},
+    "packages-dev": {}
+}
