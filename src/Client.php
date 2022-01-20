@@ -12,6 +12,8 @@
 namespace Raylin666\Guzzle;
 
 use GuzzleHttp\HandlerStack;
+use Raylin666\Contract\PoolOptionInterface;
+use Raylin666\Guzzle\Contract\ClientOptionsInterface;
 use Raylin666\Utils\Coroutine\Coroutine;
 use GuzzleHttp\Client as GuzzleHttpClient;
 use Raylin666\Guzzle\Contract\HandlerInterface;
@@ -31,9 +33,9 @@ class Client
 
     /**
      * 连接池配置项
-     * @var array
+     * @var PoolOptionInterface|null
      */
-    protected $poolOption = [];
+    protected $poolOption;
 
     /**
      * 中间件
@@ -41,7 +43,9 @@ class Client
      */
     protected $middlewares = [
         // 重试中间件 [默认开启]
-        'retry' => [RetryMiddleware::class, [1, 10]],
+        'retry' => [
+            RetryMiddleware::class, [1, 10]
+        ],
     ];
 
     /**
@@ -49,7 +53,7 @@ class Client
      */
     public function __construct()
     {
-        $this->handler = new CoroutineHandler();
+        $this->handler = make(CoroutineHandler::class);
     }
 
     /**
@@ -57,27 +61,36 @@ class Client
      * @param HandlerInterface $handler
      * @return Client
      */
-    public function setHandler(HandlerInterface $handler): self
+    public function withHandler(HandlerInterface $handler): self
     {
         $this->handler = $handler;
         return $this;
     }
 
     /**
+     * 获取 GuzzleHttp\Client 处理器
+     * @return HandlerInterface
+     */
+    public function getHandler(): HandlerInterface
+    {
+        return $this->handler;
+    }
+
+    /**
      * 设置连接池配置项 [不设置将不开启连接池]
-     * @param array $poolOption
+     * @param PoolOptionInterface $poolOption
      * @return Client
      */
-    public function setPoolOption(array $poolOption): self
+    public function withPoolOption(PoolOptionInterface $poolOption): self
     {
         $this->poolOption = $poolOption;
         return $this;
     }
 
     /**
-     * @return array
+     * @return PoolOptionInterface|null
      */
-    public function getPoolOption(): array
+    public function getPoolOption(): ?PoolOptionInterface
     {
         return $this->poolOption;
     }
@@ -87,7 +100,7 @@ class Client
      * @param array $middlewares
      * @return Client
      */
-    public function setMiddlewares(array $middlewares): self
+    public function withMiddlewares(array $middlewares): self
     {
         $this->middlewares = $middlewares;
         return $this;
@@ -103,20 +116,20 @@ class Client
 
     /**
      * 创建 GuzzleHttp\Client 客户端
-     * @param array $clientOptions
+     * @param ClientOptionsInterface|null $clientOptions
      * @return GuzzleHttpClient
      */
-    public function create(array $clientOptions = []): GuzzleHttpClient
+    public function create(?ClientOptionsInterface $clientOptions = null): GuzzleHttpClient
     {
-        $stack = null;
+        $stack = Coroutine::inCoroutine() ? $this->getHandlerStack() : null;
 
-        if (Coroutine::inCoroutine()) {
-            $stack = $this->getHandlerStack();
+        is_null($clientOptions) && $clientOptions = new ClientOptions();
+
+        if ($stack instanceof HandlerStack) {
+            $clientOptions->withHandler($stack);
         }
 
-        $config = array_replace(['handler' => $stack], $clientOptions);
-
-        return new GuzzleHttpClient($config);
+        return new GuzzleHttpClient($clientOptions->toArray());
     }
 
     /**
@@ -124,8 +137,9 @@ class Client
      */
     protected function getHandlerStack(): HandlerStack
     {
-        $this->handler->setPoolOption($this->getPoolOption());
-
+        $poolOption = $this->getPoolOption();
+        // 设置了连接池配置标志着需要开启连接池模式
+        $this->handler->withPool(boolval($poolOption), $poolOption);
         $stack = HandlerStack::create($this->handler);
 
         foreach ($this->getMiddlewares() as $key => $middleware) {

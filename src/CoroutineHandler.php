@@ -16,6 +16,8 @@ use GuzzleHttp\TransferStats;
 use InvalidArgumentException;
 use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\RequestOptions;
+use Raylin666\Contract\ConnectionPoolInterface;
+use Raylin666\Contract\PoolOptionInterface;
 use Raylin666\Guzzle\Contract\HandlerInterface;
 use Raylin666\Pool\PoolConfig;
 use Psr\Http\Message\UriInterface;
@@ -23,6 +25,7 @@ use Psr\Http\Message\StreamInterface;
 use Raylin666\Guzzle\Pool\GuzzlePool;
 use Psr\Http\Message\RequestInterface;
 use GuzzleHttp\Promise\FulfilledPromise;
+use Raylin666\Utils\Context;
 use Raylin666\Utils\Coroutine\Coroutine;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
@@ -30,7 +33,6 @@ use function GuzzleHttp\Psr7\stream_for;
 use function GuzzleHttp\is_host_in_noproxy;
 use function GuzzleHttp\Promise\rejection_for;
 use Raylin666\Guzzle\Contract\GuzzlePoolInterface;
-use Raylin666\Utils\Helper\ArrayHelper;
 use Swoole\Coroutine\Http\Client as SwooleCoroutineHttpClient;
 
 /**
@@ -40,17 +42,19 @@ use Swoole\Coroutine\Http\Client as SwooleCoroutineHttpClient;
  */
 class CoroutineHandler implements HandlerInterface
 {
+    const SCHEME_HTTPS = 'https';
+
     /**
      * 连接池状态是否开启
      * @var bool
      */
-    protected $poolStatus = false;
+    protected $isOpenPool = false;
 
     /**
      * 连接池配置
-     * @var array
+     * @var PoolOptionInterface|null
      */
-    protected $poolOption = [];
+    protected $poolOption;
 
     /**
      * 连接池
@@ -59,16 +63,66 @@ class CoroutineHandler implements HandlerInterface
     protected $pool = [];
 
     /**
-     * 设置连接池配置
-     * @param array $option
+     * 设置连接池
+     * @param bool  $isOpen
+     * @param PoolOptionInterface|null $poolOption
+     * @return HandlerInterface
      */
-    public function setPoolOption(array $option)
+    public function withPool(bool $isOpen, ?PoolOptionInterface $poolOption = null): HandlerInterface
     {
-        if ($option) {
-            $this->poolStatus = true;
+        // TODO: Implement withPool() method.
+
+        $this->isOpenPool = $isOpen;
+        $isOpen && $poolOption && $this->poolOption = $poolOption;
+        return $this;
+    }
+
+    /**
+     * 是否已开启连接池
+     * @return bool
+     */
+    public function isOpenPool(): bool
+    {
+        // TODO: Implement isOpenPool() method.
+
+        return $this->isOpenPool;
+    }
+
+    /**
+     * 获取连接池配置
+     * @return PoolOptionInterface|null
+     */
+    public function getPoolOption(): ?PoolOptionInterface
+    {
+        // TODO: Implement getPoolOption() method.
+
+        $this->poolOption;
+    }
+
+    /**
+     * 连接池处理器
+     * @param string       $poolName
+     * @param UriInterface $uri
+     * @return ConnectionPoolInterface
+     * @throws \Throwable
+     */
+    protected function poolHandler($poolName, UriInterface $uri): ConnectionPoolInterface
+    {
+        $pool = $this->pool[$poolName] ?? null;
+        if (! $pool) {
+            $poolConfig = new PoolConfig(
+                $poolName,
+                function () use ($uri) {
+                    return $this->newSwooleCoroutineHttpClient($uri->getHost(), $uri->getPort(), $uri->getScheme() === self::SCHEME_HTTPS);
+                },
+                $this->poolOption
+            );
+
+            $pool = new GuzzlePool($poolConfig);
+            $this->pool[$poolName] = $pool;
         }
 
-        $this->poolOption = $option;
+        return $pool->get();
     }
 
     /**
@@ -78,55 +132,40 @@ class CoroutineHandler implements HandlerInterface
      */
     public function __invoke(RequestInterface $request, array $options)
     {
+        $connectionPool = null;
         $uri = $request->getUri();
         $host = $uri->getHost();
-        $ssl = $uri->getScheme() === 'https';
+        $isSSL = $uri->getScheme() === 'https';
         $query = $uri->getQuery();
-
-        $port = $uri->getPort() ? : ($ssl ? 443 : 80);
+        $port = $uri->getPort() ? : ($isSSL ? 443 : 80);
         $path = $uri->getPath() ? : '/';
+        if ($query !== '') $path .= '?' . $query;
 
-        if ($query !== '') {
-            $path .= '?' . $query;
-        }
-
-        if ($this->poolStatus) {
+        if ($this->isOpenPool()) {
+            // 连接池处理
             $poolName = $this->getPoolName($uri);
-            $pool = ArrayHelper::get($this->pool, $poolName);
-            if (! $pool) {
-                $pool = new GuzzlePool(
-                    new PoolConfig(
-                        $this->getPoolName($uri),
-                        function () use ($host, $port, $ssl) {
-                            return new SwooleCoroutineHttpClient($host, $port, $ssl);
-                        },
-                        $this->poolOption
-                    )
-                );
-
-                $this->pool[$poolName] = $pool;
+            if (Context::has($poolName)) {
+                $client = Context::get($poolName);
+            } else {
+                $connectionPool = $this->poolHandler($poolName, $uri);
+                if ($client = $connectionPool->getConnection()) {
+                    Context::set($poolName, $client);
+                }
             }
-
-            $connection = $pool->get();
-
-            $client = $connection->getConnection();
-
         } else {
-            $client = new SwooleCoroutineHttpClient($host, $port, $ssl);
+            // 普通协程处理
+            $client = $this->newSwooleCoroutineHttpClient($host, $port, $isSSL);
         }
 
         try {
             $client->setMethod($request->getMethod());
             $client->setData((string) $request->getBody());
-
             // 初始化Headers
             $this->initHeaders($client, $request, $options);
             // 初始化配置
             $settings = $this->getSettings($request, $options);
             // 设置客户端参数
-            if (! empty($settings)) {
-                $client->set($settings);
-            }
+            (! empty($settings)) && $client->set($settings);
 
             $ms = microtime(true);
 
@@ -138,10 +177,11 @@ class CoroutineHandler implements HandlerInterface
             }
 
             $response = $this->getResponse($client, $request, $options, microtime(true) - $ms);
-
         } finally {
-            if ($this->poolStatus) {
-                $connection->release();
+            if ($this->isOpenPool() && $connectionPool) {
+                Coroutine::defer(function () use ($connectionPool) {
+                    $connectionPool->release();
+                });
             }
         }
 
@@ -155,6 +195,17 @@ class CoroutineHandler implements HandlerInterface
     protected function execute(SwooleCoroutineHttpClient $client, $path)
     {
         $client->execute($path);
+    }
+
+    /**
+     * @param      $host
+     * @param      $port
+     * @param bool $ssl
+     * @return SwooleCoroutineHttpClient
+     */
+    protected function newSwooleCoroutineHttpClient($host, $port, bool $ssl = false): SwooleCoroutineHttpClient
+    {
+        return new SwooleCoroutineHttpClient($host, $port, $ssl);
     }
 
     /**
@@ -262,7 +313,6 @@ class CoroutineHandler implements HandlerInterface
         // SSL KEY
         isset($options['ssl_key']) && $settings['ssl_key_file'] = $options['ssl_key'];
         isset($options['cert']) && $settings['ssl_cert_file'] = $options['cert'];
-
         // Swoole Setting
         if (isset($options['swoole']) && is_array($options['swoole'])) {
             $settings = array_replace($settings, $options['swoole']);
@@ -327,10 +377,7 @@ class CoroutineHandler implements HandlerInterface
      */
     protected function createSink(string $body, string $sink)
     {
-        if (! empty($options['stream'])) {
-            return $body;
-        }
-
+        if (! empty($options['stream'])) return $body;
         $stream = fopen($sink, 'w+');
         if ($body !== '') {
             fwrite($stream, $body);

@@ -1,12 +1,12 @@
-# Guzzle 协程处理器 (FPM环境已兼容)
+# Guzzle HTTP 协程处理器 (已兼容支持 FPM 环境)
 
-[![GitHub release](https://img.shields.io/github/release/raylin666/guzzle.svg)](https://github.com/raylin666/guzzle/releases)
-[![PHP version](https://img.shields.io/badge/php-%3E%207.0-orange.svg)](https://github.com/php/php-src)
+[![GitHub release](https://img.shields.io/github/release/raylin666/php-guzzle.svg)](https://github.com/raylin666/php-guzzle/releases)
+[![PHP version](https://img.shields.io/badge/php-%3E%207.2-orange.svg)](https://github.com/php/php-src)
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](#LICENSE)
 
 ### 环境要求
 
-* PHP >=7.0
+* PHP >=7.2
 
 ### 安装说明
 
@@ -21,14 +21,15 @@ composer require "raylin666/guzzle"
 
 require 'vendor/autoload.php';
 
+use Raylin666\Guzzle\Client;
+use Raylin666\Pool\PoolOption;
+
 /***********************************************
  * 非常驻内存环境下使用方式 (非Swoole) 
  ***********************************************/
 
-$client = new \Raylin666\Guzzle\Client();
-
+$client = new Client();
 $client = $client->create();
-
 var_dump($client->post('http://127.0.0.1:9902/api/v1/login', [
     'form_params' => [
         'username' => 'raylin',
@@ -45,44 +46,39 @@ var_dump($client->post('http://127.0.0.1:9902/api/v1/login', [
  * 常驻内存环境下使用方式 (Swoole, 协程) 
  ***********************************************/
 
-// 如果您需要使用 $container , 请自行 composer require "raylin666/container"
-$container = new \Raylin666\Container\ContainerFactory(
-    new \Raylin666\Container\Container()
-);
-
-// 使用协程, SWOOLE_HOOK_ALL 包含 CURL 需 swoole > 4.6 版本
-Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
-
-$server = new swoole_http_server('127.0.0.1', 10021);
+$server = new swoole_http_server('127.0.0.1', 9998);
 
 $server->set([
-    'worker_num' => 1,
+    'worker_num' => swoole_cpu_num(),
 ]);
 
-$client = new \Raylin666\Guzzle\Client();
+// 如果您需要使用 $container , 请自行 composer require "raylin666/container"
+$container = \Raylin666\Container\ContainerFactory::getContainer();
 
-$server->on('workerStart', function () use ($container, $client) {
-    $container::getContainer()->singleton('guzzleHttp', function () use ($client) {
-        return $client->create([], [
-            'min_connections' => 10,
-            'max_connections' => 50,
-            'wait_timeout'  => 60,
-        ]);
+$server->on('workerStart', function (Swoole\Server $server, int $workerId) use ($container) {
+    var_dump("进程 $workerId 已启动.");
+
+    $client = new Client();
+    $client->withPoolOption(
+        (new PoolOption())->withMinConnections(1)
+        ->withMaxConnections(10)
+        ->withWaitTimeout(10)
+    );
+    $container->bind(\GuzzleHttp\Client::class, function () use ($client) {
+        return $client->create();
     });
 });
 
-$server->on('request', function () use ($container) {
-    // 并发请求
-    for ($i = 0; $i <= 100; $i++) {
-        go(function () use ($container) {
-           var_dump($container::getContainer()->get('guzzleHttp')->get('https://baidu.com'));
-           var_dump($container::getContainer()->get('guzzleHttp')->post('http://127.0.0.1:9902/api/v1/login', [
-               'form_params' => [
-                   'username' => 'raylin',
-                   'password' => '123456',
-               ]
-           ]));
-        });
+$server->on('request', function (Swoole\Http\Request $request, Swoole\Http\Response $response) use ($container) {
+    /** @var \GuzzleHttp\Client $client */
+    $client = $container->get(\GuzzleHttp\Client::class);
+    for ($i = 0; $i < 100; $i++) {
+         // 并发请求
+         go(function () use ($client) {
+            $response = $client->get('http://baidu.com');
+            var_dump($response->getBody()->getContents());
+            $response->getBody()->close();
+         });
     }
 });
 
