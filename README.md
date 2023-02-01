@@ -11,7 +11,7 @@
 ### 安装说明
 
 ```
-composer require "raylin666/guzzle"
+composer require "guanhui07/guzzle"
 ```
 
 ### 使用方式
@@ -85,6 +85,31 @@ $server->on('request', function (Swoole\Http\Request $request, Swoole\Http\Respo
 $server->start();
 
 ```
+
+
+```php
+// on worker start
+$client = new Client();
+$client->withPoolOption(
+    (new PoolOption())->withMinConnections(1)
+        ->withMaxConnections(10)
+        ->withWaitTimeout(10)
+);
+$container->make(\GuzzleHttp\Client::class, [function () use ($client) {
+    return $client->create();
+}]);
+        
+        
+        
+  // 控制器中使用 
+ $client = di()->get(\GuzzleHttp\Client::class);
+$result = $client->get('http://baidu.com');
+var_dump($result->getBody()->getContents());
+$result->getBody()->close();
+        
+        
+```
+
 
 ## 更新日志
 
