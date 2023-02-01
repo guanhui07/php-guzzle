@@ -19,7 +19,7 @@
     "require": {
         "php": ">=7.2",
         "psr/http-message": "^1.0",
-        "guzzlehttp/guzzle": "^6.3",
+        "guzzlehttp/guzzle": "^7.0",
         "raylin666/utils": "^1.0",
         "raylin666/pool": "^2.0"
     },
